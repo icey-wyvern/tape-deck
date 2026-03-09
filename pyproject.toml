@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vcr-proxy"
+version = "0.1.0"
+description = "Record and replay HTTP/HTTPS interactions through a local proxy."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "cryptography",
+  "h11",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest==9.0.2",
+  "trustme",
+]
+
+[project.scripts]
+vcr-proxy = "vcr_proxy.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["vcr_proxy*"]

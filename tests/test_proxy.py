@@ -1,7 +1,9 @@
 import base64
 import json
+import os
 import socket
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
@@ -14,7 +16,9 @@ from urllib.parse import parse_qsl, urlsplit
 
 import trustme
 import h11
+import pytest
 
+from vcr_proxy import cassette as cassette_io
 from vcr_proxy.pytest_helper import proxy_context
 from vcr_proxy.config import load_config
 from vcr_proxy.verify import verify_cassette
@@ -33,6 +37,7 @@ class UpstreamThread:
         self._keep_alive = keep_alive
         self.last_path: Optional[str] = None
         self.last_headers: List[Tuple[str, str]] = []
+        self._sequence = 0
 
     def start(self) -> Tuple[str, int]:
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -91,6 +96,11 @@ class UpstreamThread:
             body = await reader.readexactly(int(length))
         if path.startswith("/hello"):
             await _send_content_length(writer, 200, b"hello", close=not self._keep_alive)
+        elif path == "/sequence":
+            self._sequence += 1
+            await _send_content_length(
+                writer, 200, f"response-{self._sequence}".encode("ascii"), close=not self._keep_alive
+            )
         elif path.startswith("/sensitive-headers"):
             await _send_content_length(
                 writer, 200, b"hello", close=not self._keep_alive,
@@ -441,6 +451,7 @@ class UpstreamTlsThread:
         self._ca = trustme.CA()
         self._cert = self._ca.issue_cert("localhost")
         self._keep_alive = keep_alive
+        self._sequence = 0
 
     @property
     def ca(self) -> trustme.CA:
@@ -501,6 +512,11 @@ class UpstreamTlsThread:
             body = await reader.readexactly(int(length))
         if path.startswith("/hello"):
             await _send_content_length(writer, 200, b"hello", close=not self._keep_alive)
+        elif path == "/sequence":
+            self._sequence += 1
+            await _send_content_length(
+                writer, 200, f"response-{self._sequence}".encode("ascii"), close=not self._keep_alive
+            )
         elif path.startswith("/echo") and method.upper() == "POST":
             await _send_content_length(writer, 200, body, close=not self._keep_alive)
         elif path.startswith("/chunked"):
@@ -558,6 +574,32 @@ def test_record_replay_get_content_length(tmp_path: Path) -> None:
             assert resp.status == 200
             assert data == b"hello"
         connect.assert_not_called()
+
+
+def test_http_replay_consumes_matching_interactions_in_order(tmp_path: Path) -> None:
+    config_path = _write_config(tmp_path)
+    upstream = UpstreamThread()
+    host, port = upstream.start()
+    sequence_url = f"http://{host}:{port}/sequence"
+    other_url = f"http://{host}:{port}/hello"
+    try:
+        with proxy_context(str(config_path), mode="record") as proxy_address:
+            assert _request(*proxy_address, "GET", sequence_url)[1] == b"response-1"
+            assert _request(*proxy_address, "GET", other_url)[1] == b"hello"
+            assert _request(*proxy_address, "GET", sequence_url)[1] == b"response-2"
+    finally:
+        upstream.stop()
+    cassette_path = tmp_path / "cassettes" / "cassette.json"
+    recorded = cassette_path.read_bytes()
+    with patch("vcr_proxy.proxy.asyncio.open_connection", side_effect=AssertionError("replay contacted upstream")) as connect:
+        with proxy_context(str(config_path), mode="replay") as proxy_address:
+            assert _request(*proxy_address, "GET", sequence_url)[1] == b"response-1"
+            assert _request(*proxy_address, "GET", other_url)[1] == b"hello"
+            assert _request(*proxy_address, "GET", sequence_url)[1] == b"response-2"
+            miss, body = _request(*proxy_address, "GET", sequence_url)
+            assert miss.status == 502 and b"no matching interaction" in body
+        connect.assert_not_called()
+    assert cassette_path.read_bytes() == recorded
 
 
 def test_record_replay_post_content_length(tmp_path: Path) -> None:
@@ -723,6 +765,7 @@ def test_recorded_url_is_redacted_but_upstream_receives_original(tmp_path: Path)
                 headers={"Authorization": "Basic synthetic-authorization"},
             )
             assert resp.status == 200 and data == b"hello"
+        with proxy_context(str(config_path), mode="replay") as (proxy_host, proxy_port):
             resp, data = _request(
                 proxy_host, proxy_port, "GET",
                 f"http://synthetic-other:synthetic-other@{up_host}:{up_port}/hello?keep=one&token=synthetic-other&keep=two&API_KEY=synthetic-other",
@@ -804,6 +847,41 @@ def test_https_record_replay_get(tmp_path: Path) -> None:
             assert b"no matching interaction" in miss_response.read()
             miss.close()
         connect.assert_not_called()
+
+
+def test_https_replay_consumes_matching_interactions_in_order(tmp_path: Path) -> None:
+    config_path = _write_tls_config(tmp_path)
+    ca_dir = tmp_path / "ca"
+    init_ca(ca_dir / "ca.key", ca_dir / "ca.crt", None)
+    client_ctx = ssl.create_default_context(cafile=str(ca_dir / "ca.crt"))
+    upstream = UpstreamTlsThread()
+    _host, port = upstream.start()
+
+    def request(proxy_host: str, proxy_port: int) -> Tuple[int, bytes]:
+        conn = http.client.HTTPSConnection(proxy_host, proxy_port, context=client_ctx, timeout=5)
+        conn.set_tunnel("localhost", port)
+        conn.request("GET", "/sequence")
+        response = conn.getresponse()
+        result = response.status, response.read()
+        conn.close()
+        return result
+
+    try:
+        with proxy_context(str(config_path), mode="record") as proxy_address:
+            assert request(*proxy_address) == (200, b"response-1")
+            assert request(*proxy_address) == (200, b"response-2")
+    finally:
+        upstream.stop()
+    cassette_path = tmp_path / "cassettes" / "cassette.json"
+    recorded = cassette_path.read_bytes()
+    with patch("vcr_proxy.proxy.asyncio.open_connection", side_effect=AssertionError("replay contacted upstream")) as connect:
+        with proxy_context(str(config_path), mode="replay") as proxy_address:
+            assert request(*proxy_address) == (200, b"response-1")
+            assert request(*proxy_address) == (200, b"response-2")
+            status, body = request(*proxy_address)
+            assert status == 502 and b"no matching interaction" in body
+        connect.assert_not_called()
+    assert cassette_path.read_bytes() == recorded
 
 
 def test_https_alpn_forces_http1(tmp_path: Path) -> None:
@@ -1256,6 +1334,106 @@ def test_verify_reports_malformed_cassettes(tmp_path: Path) -> None:
     ]:
         path.write_text(json.dumps(payload), encoding="utf-8")
         assert any(expected in error for error in verify_cassette(path, [], 1))
+
+
+def test_concurrent_appends_keep_every_interaction(tmp_path: Path) -> None:
+    cfg = load_config(str(_write_config(tmp_path)))
+    cassette_path = cfg.cassette_dir / "cassette.json"
+    start = threading.Barrier(8)
+
+    def record(worker: int) -> None:
+        start.wait()
+        for offset in range(8):
+            index = worker * 8 + offset
+            interaction = {
+                "request": {
+                    "method": "GET", "url": f"http://example.test/{index}", "headers": {},
+                    "body_b64": "", "body_sha256": "", "truncated": False,
+                },
+                "response": {
+                    "status": 200, "reason": "OK", "headers": {},
+                    "body_b64": "", "body_sha256": "", "truncated": False,
+                },
+                "timing": {"started_at": 0, "duration_ms": 0},
+            }
+            cassette_io.append_interaction(cassette_path, cfg, interaction)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(record, range(8)))
+    interactions = cassette_io.load_cassette(cassette_path)["interactions"]
+    assert len(interactions) == 64
+    assert {item["request"]["url"] for item in interactions} == {
+        f"http://example.test/{index}" for index in range(64)
+    }
+
+
+def test_atomic_write_preserves_previous_cassette_on_failure(tmp_path: Path) -> None:
+    path = tmp_path / "cassette.json"
+    cassette_io.write_cassette(path, {"schema_version": 1, "interactions": []})
+    original = path.read_bytes()
+    with patch("vcr_proxy.cassette.os.replace", side_effect=OSError("synthetic failure")):
+        with pytest.raises(cassette_io.CassetteWriteError, match="could not write cassette"):
+            cassette_io.write_cassette(path, {"schema_version": 1, "interactions": [{"new": True}]})
+    assert path.read_bytes() == original
+    assert list(tmp_path.glob(".cassette.json.*.tmp")) == []
+
+
+def test_record_write_failure_is_logged_without_request_data(tmp_path: Path, caplog) -> None:
+    config_path = _write_config(tmp_path)
+    with upstream_context() as (host, port):
+        with patch(
+            "vcr_proxy.proxy.cassette_io.append_interaction",
+            side_effect=cassette_io.CassetteWriteError("could not write cassette"),
+        ):
+            with proxy_context(str(config_path), mode="record") as proxy_address:
+                response, body = _request(
+                    *proxy_address, "GET", f"http://{host}:{port}/hello?token=synthetic-secret"
+                )
+                assert response.status == 200 and body == b"hello"
+    assert "cassette recording failed: could not write cassette" in caplog.text
+    assert "synthetic-secret" not in caplog.text
+
+
+def test_malformed_replay_cassette_returns_clear_error(tmp_path: Path, caplog) -> None:
+    config_path = _write_config(tmp_path)
+    cassette_path = tmp_path / "cassettes" / "cassette.json"
+    cassette_path.parent.mkdir()
+    url = "http://127.0.0.1:12345/private?token=synthetic-secret"
+    with proxy_context(str(config_path), mode="replay") as proxy_address:
+        for content in ("not json", json.dumps({"schema_version": 1, "interactions": [{"request": {}, "response": {}}]})):
+            cassette_path.write_text(content, encoding="utf-8")
+            response, body = _request(*proxy_address, "GET", url)
+            assert response.status == 502 and body == b"invalid cassette"
+    assert "cassette replay failed" in caplog.text
+    assert "synthetic-secret" not in caplog.text
+
+
+def test_proxy_context_restores_existing_proxy_environment(monkeypatch) -> None:
+    names = ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy")
+    original = {name: f"http://previous-{name.lower()}" for name in names}
+    for name, value in original.items():
+        monkeypatch.setenv(name, value)
+    with patch("vcr_proxy.pytest_helper.ProxyThread") as thread:
+        thread.return_value.start.return_value = ("127.0.0.1", 4321)
+        with proxy_context("unused") as address:
+            assert address == ("127.0.0.1", 4321)
+            assert {name: os.environ[name] for name in names} == {
+                name: "http://127.0.0.1:4321" for name in names
+            }
+        thread.return_value.stop.assert_called_once_with()
+    assert {name: os.environ[name] for name in names} == original
+
+
+def test_proxy_context_removes_previously_absent_proxy_environment(monkeypatch) -> None:
+    names = ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy")
+    for name in names:
+        monkeypatch.delenv(name, raising=False)
+    with patch("vcr_proxy.pytest_helper.ProxyThread") as thread:
+        thread.return_value.start.return_value = ("127.0.0.1", 4321)
+        with proxy_context("unused"):
+            assert all(os.environ[name] == "http://127.0.0.1:4321" for name in names)
+        thread.return_value.stop.assert_called_once_with()
+    assert all(name not in os.environ for name in names)
 
 
 def test_doctor_output(capsys) -> None:

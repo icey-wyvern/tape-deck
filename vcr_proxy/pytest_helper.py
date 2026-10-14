@@ -83,21 +83,18 @@ class ProxyThread:
 @contextmanager
 def proxy_context(config_path: str, mode: str = "record") -> Iterator[Tuple[str, int]]:
     proxy = ProxyThread(config_path, mode)
-    previous_http = os.environ.get("HTTP_PROXY")
-    previous_lower = os.environ.get("http_proxy")
+    proxy_variables = ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy")
+    previous = {name: os.environ.get(name) for name in proxy_variables}
     host, port = proxy.start()
     proxy_url = f"http://{host}:{port}"
-    os.environ["HTTP_PROXY"] = proxy_url
-    os.environ["http_proxy"] = proxy_url
+    for name in proxy_variables:
+        os.environ[name] = proxy_url
     try:
         yield host, port
     finally:
-        if previous_http is None:
-            os.environ.pop("HTTP_PROXY", None)
-        else:
-            os.environ["HTTP_PROXY"] = previous_http
-        if previous_lower is None:
-            os.environ.pop("http_proxy", None)
-        else:
-            os.environ["http_proxy"] = previous_lower
+        for name, value in previous.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
         proxy.stop()

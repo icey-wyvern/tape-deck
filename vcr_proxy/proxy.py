@@ -1,6 +1,7 @@
 import asyncio
 import time
 import hashlib
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlsplit
@@ -23,6 +24,8 @@ HOP_BY_HOP = {
     "upgrade",
 }
 
+logger = logging.getLogger(__name__)
+
 
 class UpstreamTimeoutError(Exception):
     pass
@@ -35,6 +38,27 @@ class ProxyServer:
         self._server: Optional[asyncio.base_events.Server] = None
         self._tls_manager: Optional[TlsManager] = None
         self._active_handlers: set[asyncio.Task] = set()
+        self._replayed_indices: Dict[Path, set[int]] = {}
+        self._replay_locks: Dict[Path, asyncio.Lock] = {}
+
+    async def _take_replay_interaction(
+        self, path: Path, incoming_key: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        lock = self._replay_locks.setdefault(path, asyncio.Lock())
+        async with lock:
+            cassette = cassette_io.load_cassette(path)
+            used = self._replayed_indices.setdefault(path, set())
+            for index, interaction in enumerate(cassette["interactions"]):
+                if index in used:
+                    continue
+                try:
+                    matches = match_interaction(self.cfg.match, incoming_key, interaction)
+                except (AttributeError, KeyError, TypeError, ValueError) as exc:
+                    raise cassette_io.CassetteError("invalid cassette interaction") from exc
+                if matches:
+                    used.add(index)
+                    return interaction
+            return None
 
     async def start(self) -> None:
         self._server = await asyncio.start_server(
@@ -96,7 +120,8 @@ class ProxyServer:
             await _send_error(writer, 504, "Gateway Timeout", b"upstream timed out")
         except ValueError as exc:
             await _send_error(writer, 400, "Bad Request", str(exc).encode("ascii", errors="ignore"))
-        except Exception:
+        except Exception as exc:
+            logger.error("proxy request failed: %s", type(exc).__name__)
             await _send_error(writer, 400, "Bad Request", b"proxy error")
         finally:
             try:
@@ -148,7 +173,6 @@ class ProxyServer:
         upstream_writer.close()
         await upstream_writer.wait_closed()
         cassette_path = cassette_io.cassette_path(self.cfg, upstream_host)
-        cassette = cassette_io.load_cassette(cassette_path) if cassette_path.exists() else cassette_io.new_cassette(self.cfg)
         redacted_headers = redact_headers(headers, self.cfg.redaction.get("headers", []))
         redacted_body = redact_body(body, self.cfg.redaction.get("body_patterns", []))
         stored_req_body = redacted_body
@@ -174,8 +198,10 @@ class ProxyServer:
             },
             "timing": {"started_at": started_at, "duration_ms": duration_ms},
         }
-        cassette["interactions"].append(interaction)
-        cassette_io.write_cassette(cassette_path, cassette)
+        try:
+            cassette_io.append_interaction(cassette_path, self.cfg, interaction)
+        except cassette_io.CassetteError as exc:
+            logger.error("cassette recording failed: %s", exc)
 
     async def _handle_replay(
         self,
@@ -191,14 +217,18 @@ class ProxyServer:
         if not cassette_path.exists():
             await _send_error(client_writer, 502, "Bad Gateway", b"no cassette")
             return
-        cassette = cassette_io.load_cassette(cassette_path)
         redacted_headers = redact_headers(headers, self.cfg.redaction.get("headers", []))
         redacted_body = redact_body(body, self.cfg.redaction.get("body_patterns", []))
         incoming_key = request_match_key(self.cfg.match, method, redact_url(target), redacted_headers, redacted_body)
-        for interaction in cassette.get("interactions", []):
-            if match_interaction(self.cfg.match, incoming_key, interaction):
-                await _send_replay(client_writer, interaction)
-                return
+        try:
+            interaction = await self._take_replay_interaction(cassette_path, incoming_key)
+        except cassette_io.CassetteError as exc:
+            logger.error("cassette replay failed: %s", exc)
+            await _send_error(client_writer, 502, "Bad Gateway", b"invalid cassette")
+            return
+        if interaction is not None:
+            await _send_replay(client_writer, interaction)
+            return
         await _send_error(client_writer, 502, "Bad Gateway", b"no matching interaction")
 
     async def _handle_connect(
@@ -357,9 +387,10 @@ class ProxyServer:
             "timing": {"started_at": started_at, "duration_ms": duration_ms},
         }
         cassette_path = cassette_io.cassette_path(self.cfg, host)
-        cassette = cassette_io.load_cassette(cassette_path) if cassette_path.exists() else cassette_io.new_cassette(self.cfg)
-        cassette["interactions"].append(interaction)
-        cassette_io.write_cassette(cassette_path, cassette)
+        try:
+            cassette_io.append_interaction(cassette_path, self.cfg, interaction)
+        except cassette_io.CassetteError as exc:
+            logger.error("cassette recording failed: %s", exc)
         client_close = _header_has_token(headers, "connection", "close")
         resp_close = _header_has_token(resp_headers, "connection", "close")
         return client_close or resp_close
@@ -378,7 +409,6 @@ class ProxyServer:
         if not cassette_path.exists():
             await _send_h11_error(client_writer, server_conn, 502, "Bad Gateway", b"no cassette")
             return True
-        cassette = cassette_io.load_cassette(cassette_path)
         req_capture = _BodyCapture(
             self.cfg.redaction.get("body_patterns", []),
             _needs_full_body(self.cfg.match),
@@ -387,16 +417,21 @@ class ProxyServer:
         req_record = req_capture.finish()
         redacted_headers = redact_headers(headers, self.cfg.redaction.get("headers", []))
         incoming_key = _build_incoming_key(self.cfg.match, method, redact_url(url), redacted_headers, req_record)
-        for interaction in cassette.get("interactions", []):
-            if match_interaction(self.cfg.match, incoming_key, interaction):
-                resp = interaction["response"]
-                body = cassette_io.b64decode_bytes(resp.get("body_b64", ""))
-                headers = _dict_to_headers(resp.get("headers", {}))
-                await _h11_send_response(
-                    client_writer, server_conn, resp["status"], resp["reason"], headers, body, force_content_length=True
-                )
-                client_close = _header_has_token(headers, "connection", "close")
-                return client_close
+        try:
+            interaction = await self._take_replay_interaction(cassette_path, incoming_key)
+        except cassette_io.CassetteError as exc:
+            logger.error("cassette replay failed: %s", exc)
+            await _send_h11_error(client_writer, server_conn, 502, "Bad Gateway", b"invalid cassette")
+            return True
+        if interaction is not None:
+            resp = interaction["response"]
+            body = cassette_io.b64decode_bytes(resp.get("body_b64", ""))
+            headers = _dict_to_headers(resp.get("headers", {}))
+            await _h11_send_response(
+                client_writer, server_conn, resp["status"], resp["reason"], headers, body, force_content_length=True
+            )
+            client_close = _header_has_token(headers, "connection", "close")
+            return client_close
         await _send_h11_error(client_writer, server_conn, 502, "Bad Gateway", b"no matching interaction")
         return True
 

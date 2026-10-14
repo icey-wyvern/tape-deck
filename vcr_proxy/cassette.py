@@ -6,7 +6,7 @@ import tempfile
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 from .config import Config
 
@@ -77,9 +77,7 @@ def load_cassette(path: Path) -> Dict[str, Any]:
 
 def _valid_headers(headers: Any) -> bool:
     return isinstance(headers, dict) and all(
-        isinstance(name, str)
-        and isinstance(values, list)
-        and all(isinstance(value, str) for value in values)
+        isinstance(name, str) and isinstance(values, list) and all(isinstance(value, str) for value in values)
         for name, values in headers.items()
     )
 
@@ -93,8 +91,13 @@ def write_cassette(path: Path, data: Dict[str, Any]) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8", newline="\n", dir=path.parent,
-            prefix=f".{path.name}.", suffix=".tmp", delete=False,
+            mode="w",
+            encoding="utf-8",
+            newline="\n",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
         ) as stream:
             temporary = Path(stream.name)
             stream.write(text)

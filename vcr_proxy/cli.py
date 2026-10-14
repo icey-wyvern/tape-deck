@@ -21,7 +21,7 @@ def _parse_args() -> argparse.Namespace:
     replay = sub.add_parser("replay", parents=[base], help="Replay HTTP interactions")
     verify = sub.add_parser("verify", parents=[base], help="Verify cassette files")
     sub.add_parser("doctor", help="Print setup hints")
-    init = sub.add_parser("init", parents=[base], help="Write a default config file")
+    sub.add_parser("init", parents=[base], help="Write a default config file")
     ca_init = sub.add_parser("ca-init", parents=[base], help="Create a local CA for HTTPS MITM")
 
     record.set_defaults(mode="record")
@@ -61,7 +61,9 @@ def _verify(config_path: str) -> int:
     cfg = load_config(config_path)
     cassette_dir = cfg.cassette_dir
     errors = _verify_cassettes(
-        cassette_dir, cfg.redaction.get("headers", []), cfg.cassette["schema_version"],
+        cassette_dir,
+        cfg.redaction.get("headers", []),
+        cfg.cassette["schema_version"],
         cfg.redaction.get("body_patterns", []),
     )
     if errors:
@@ -73,7 +75,9 @@ def _verify(config_path: str) -> int:
 
 
 def _verify_cassettes(
-    cassette_dir: Path, redact_headers: List[str], schema_version: int,
+    cassette_dir: Path,
+    redact_headers: List[str],
+    schema_version: int,
     body_patterns: List[dict],
 ) -> List[str]:
     errors: List[str] = []

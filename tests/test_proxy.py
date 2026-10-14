@@ -1,29 +1,28 @@
+import asyncio
 import base64
+import http.client
 import json
 import os
 import socket
+import ssl
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
-
-import http.client
-import asyncio
-import ssl
 from unittest.mock import patch
 from urllib.parse import parse_qsl, urlsplit
 
-import trustme
 import h11
 import pytest
+import trustme
 
 from vcr_proxy import cassette as cassette_io
-from vcr_proxy.pytest_helper import proxy_context
 from vcr_proxy.config import load_config
-from vcr_proxy.verify import verify_cassette
-from vcr_proxy.tls_ca import init_ca
+from vcr_proxy.pytest_helper import proxy_context
 from vcr_proxy.redact import REDACTION_MARKER, redact_url
+from vcr_proxy.tls_ca import init_ca
+from vcr_proxy.verify import verify_cassette
 
 
 class UpstreamThread:
@@ -103,7 +102,10 @@ class UpstreamThread:
             )
         elif path.startswith("/sensitive-headers"):
             await _send_content_length(
-                writer, 200, b"hello", close=not self._keep_alive,
+                writer,
+                200,
+                b"hello",
+                close=not self._keep_alive,
                 extra_headers=[("Set-Cookie", "session=synthetic-cookie"), ("X-API-Key", "synthetic-key")],
             )
         elif path.startswith("/echo") and method.upper() == "POST":
@@ -135,7 +137,10 @@ class UpstreamThread:
 
 
 async def _send_content_length(
-    writer: asyncio.StreamWriter, status: int, body: bytes, close: bool = True,
+    writer: asyncio.StreamWriter,
+    status: int,
+    body: bytes,
+    close: bool = True,
     extra_headers: Optional[List[Tuple[str, str]]] = None,
 ) -> None:
     lines = [
@@ -151,9 +156,7 @@ async def _send_content_length(
     await writer.drain()
 
 
-async def _send_chunked(
-    writer: asyncio.StreamWriter, status: int, chunks: List[bytes], close: bool = True
-) -> None:
+async def _send_chunked(writer: asyncio.StreamWriter, status: int, chunks: List[bytes], close: bool = True) -> None:
     lines = [
         f"HTTP/1.1 {status} OK",
         "Transfer-Encoding: chunked",
@@ -534,9 +537,7 @@ class UpstreamTlsThread:
         async def _serve() -> None:
             ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             self._cert.configure_cert(ssl_ctx)
-            self._server = await asyncio.start_server(
-                self._handler, host="127.0.0.1", port=0, ssl=ssl_ctx
-            )
+            self._server = await asyncio.start_server(self._handler, host="127.0.0.1", port=0, ssl=ssl_ctx)
             sock = self._server.sockets[0].getsockname()
             self._bound = (sock[0], sock[1])
             self._started.set()
@@ -568,7 +569,9 @@ def test_record_replay_get_content_length(tmp_path: Path) -> None:
             resp, data = _request(proxy_host, proxy_port, "GET", f"http://{up_host}:{up_port}/hello")
             assert resp.status == 200
             assert data == b"hello"
-    with patch("vcr_proxy.proxy.asyncio.open_connection", side_effect=AssertionError("replay contacted upstream")) as connect:
+    with patch(
+        "vcr_proxy.proxy.asyncio.open_connection", side_effect=AssertionError("replay contacted upstream")
+    ) as connect:
         with proxy_context(str(config_path), mode="replay") as (proxy_host, proxy_port):
             resp, data = _request(proxy_host, proxy_port, "GET", f"http://{up_host}:{up_port}/hello")
             assert resp.status == 200
@@ -591,7 +594,9 @@ def test_http_replay_consumes_matching_interactions_in_order(tmp_path: Path) -> 
         upstream.stop()
     cassette_path = tmp_path / "cassettes" / "cassette.json"
     recorded = cassette_path.read_bytes()
-    with patch("vcr_proxy.proxy.asyncio.open_connection", side_effect=AssertionError("replay contacted upstream")) as connect:
+    with patch(
+        "vcr_proxy.proxy.asyncio.open_connection", side_effect=AssertionError("replay contacted upstream")
+    ) as connect:
         with proxy_context(str(config_path), mode="replay") as proxy_address:
             assert _request(*proxy_address, "GET", sequence_url)[1] == b"response-1"
             assert _request(*proxy_address, "GET", other_url)[1] == b"hello"
@@ -651,7 +656,9 @@ def test_strict_miss_returns_error(tmp_path: Path) -> None:
         with proxy_context(str(config_path), mode="record") as (proxy_host, proxy_port):
             resp, _data = _request(proxy_host, proxy_port, "GET", f"http://{up_host}:{up_port}/hello")
             assert resp.status == 200
-    with patch("vcr_proxy.proxy.asyncio.open_connection", side_effect=AssertionError("replay contacted upstream")) as connect:
+    with patch(
+        "vcr_proxy.proxy.asyncio.open_connection", side_effect=AssertionError("replay contacted upstream")
+    ) as connect:
         with proxy_context(str(config_path), mode="replay") as (proxy_host, proxy_port):
             resp, data = _request(proxy_host, proxy_port, "GET", f"http://{up_host}:{up_port}/missing")
             assert resp.status == 502
@@ -669,7 +676,8 @@ def test_redaction_headers(tmp_path: Path) -> None:
                 "GET",
                 f"http://{up_host}:{up_port}/sensitive-headers",
                 headers={
-                    "Authorization": "Bearer synthetic-auth", "Cookie": "session=synthetic-cookie",
+                    "Authorization": "Bearer synthetic-auth",
+                    "Cookie": "session=synthetic-cookie",
                     "X-API-Key": "synthetic-key",
                 },
             )
@@ -697,9 +705,14 @@ def test_url_redaction_preserves_structure() -> None:
     assert urlsplit(redacted).path == "/path"
     assert urlsplit(redacted).fragment == "part"
     assert parse_qsl(urlsplit(redacted).query, keep_blank_values=True) == [
-        ("keep", "one"), ("ToKeN", REDACTION_MARKER), ("keep", "two"),
-        ("ACCESS_TOKEN", REDACTION_MARKER), ("api-key", REDACTION_MARKER),
-        ("empty", ""), ("flag", ""), ("password", REDACTION_MARKER),
+        ("keep", "one"),
+        ("ToKeN", REDACTION_MARKER),
+        ("keep", "two"),
+        ("ACCESS_TOKEN", REDACTION_MARKER),
+        ("api-key", REDACTION_MARKER),
+        ("empty", ""),
+        ("flag", ""),
+        ("password", REDACTION_MARKER),
         ("key", REDACTION_MARKER),
     ]
     assert "synthetic-" not in redacted
@@ -708,8 +721,18 @@ def test_url_redaction_preserves_structure() -> None:
 
 def test_common_sensitive_query_key_variants() -> None:
     for name in (
-        "token", "access_token", "refresh-token", "api_key", "apikey", "key",
-        "password", "passwd", "secret", "client_secret", "auth", "authorization",
+        "token",
+        "access_token",
+        "refresh-token",
+        "api_key",
+        "apikey",
+        "key",
+        "password",
+        "passwd",
+        "secret",
+        "client_secret",
+        "auth",
+        "authorization",
     ):
         assert redact_url(f"http://example.test/?{name}=synthetic-value") == (
             f"http://example.test/?{name}={REDACTION_MARKER}"
@@ -721,11 +744,12 @@ def test_common_sensitive_query_key_variants() -> None:
 
 def test_url_userinfo_redaction() -> None:
     for original, expected in [
-        ("https://synthetic-user:synthetic-pass@example.test:8443/path?token=synthetic-token&keep=yes#part",
-         "https://***:***@example.test:8443/path?token=***&keep=yes#part"),
+        (
+            "https://synthetic-user:synthetic-pass@example.test:8443/path?token=synthetic-token&keep=yes#part",
+            "https://***:***@example.test:8443/path?token=***&keep=yes#part",
+        ),
         ("https://synthetic-user@example.test/path", "https://***@example.test/path"),
-        ("https://synthetic%40user:synthetic%3Apass@example.test/path",
-         "https://***:***@example.test/path"),
+        ("https://synthetic%40user:synthetic%3Apass@example.test/path", "https://***:***@example.test/path"),
         ("https://example.test/path?keep=yes#part", "https://example.test/path?keep=yes#part"),
     ]:
         assert redact_url(original) == expected
@@ -741,7 +765,10 @@ def test_recorded_url_is_redacted_but_upstream_receives_original(tmp_path: Path)
         url = f"http://synthetic-user:synthetic-pass@{up_host}:{up_port}/hello?{query}"
         with proxy_context(str(config_path), mode="record") as (proxy_host, proxy_port):
             resp, data = _request(
-                proxy_host, proxy_port, "GET", url,
+                proxy_host,
+                proxy_port,
+                "GET",
+                url,
                 headers={"Authorization": "Basic synthetic-authorization"},
             )
             assert resp.status == 200 and data == b"hello"
@@ -758,22 +785,31 @@ def test_recorded_url_is_redacted_but_upstream_receives_original(tmp_path: Path)
     assert "synthetic-" not in cassette_path.read_text(encoding="utf-8")
     cfg = load_config(str(config_path))
     assert verify_cassette(cassette_path, cfg.redaction["headers"], 1, cfg.redaction["body_patterns"]) == []
-    with patch("vcr_proxy.proxy.asyncio.open_connection", side_effect=AssertionError("replay contacted upstream")) as connect:
+    with patch(
+        "vcr_proxy.proxy.asyncio.open_connection", side_effect=AssertionError("replay contacted upstream")
+    ) as connect:
         with proxy_context(str(config_path), mode="replay") as (proxy_host, proxy_port):
             resp, data = _request(
-                proxy_host, proxy_port, "GET", url,
+                proxy_host,
+                proxy_port,
+                "GET",
+                url,
                 headers={"Authorization": "Basic synthetic-authorization"},
             )
             assert resp.status == 200 and data == b"hello"
         with proxy_context(str(config_path), mode="replay") as (proxy_host, proxy_port):
             resp, data = _request(
-                proxy_host, proxy_port, "GET",
+                proxy_host,
+                proxy_port,
+                "GET",
                 f"http://synthetic-other:synthetic-other@{up_host}:{up_port}/hello?keep=one&token=synthetic-other&keep=two&API_KEY=synthetic-other",
                 headers={"Authorization": "Basic synthetic-other"},
             )
             assert resp.status == 200 and data == b"hello"
             resp, data = _request(
-                proxy_host, proxy_port, "GET",
+                proxy_host,
+                proxy_port,
+                "GET",
                 f"http://synthetic-other:synthetic-other@{up_host}:{up_port}/hello?keep=changed&token=synthetic-other&keep=two&API_KEY=synthetic-other",
                 headers={"Authorization": "Basic synthetic-other"},
             )
@@ -828,7 +864,9 @@ def test_https_record_replay_get(tmp_path: Path) -> None:
     stored_url = json.loads(cassette_path.read_text(encoding="utf-8"))["interactions"][0]["request"]["url"]
     assert stored_url.endswith("/hello?access_token=***&keep=yes")
     assert "synthetic-https" not in cassette_path.read_text(encoding="utf-8")
-    with patch("vcr_proxy.proxy.asyncio.open_connection", side_effect=AssertionError("replay contacted upstream")) as connect:
+    with patch(
+        "vcr_proxy.proxy.asyncio.open_connection", side_effect=AssertionError("replay contacted upstream")
+    ) as connect:
         with proxy_context(str(config_path), mode="replay") as (proxy_host, proxy_port):
             client_ctx = ssl.create_default_context(cafile=str(ca_dir / "ca.crt"))
             conn = http.client.HTTPSConnection(proxy_host, proxy_port, context=client_ctx, timeout=5)
@@ -874,7 +912,9 @@ def test_https_replay_consumes_matching_interactions_in_order(tmp_path: Path) ->
         upstream.stop()
     cassette_path = tmp_path / "cassettes" / "cassette.json"
     recorded = cassette_path.read_bytes()
-    with patch("vcr_proxy.proxy.asyncio.open_connection", side_effect=AssertionError("replay contacted upstream")) as connect:
+    with patch(
+        "vcr_proxy.proxy.asyncio.open_connection", side_effect=AssertionError("replay contacted upstream")
+    ) as connect:
         with proxy_context(str(config_path), mode="replay") as proxy_address:
             assert request(*proxy_address) == (200, b"response-1")
             assert request(*proxy_address) == (200, b"response-2")
@@ -1277,23 +1317,32 @@ def test_verify_schema_and_redaction_errors(tmp_path: Path) -> None:
 def test_verify_detects_exposure_on_each_stored_surface(tmp_path: Path) -> None:
     baseline = {
         "schema_version": 1,
-        "interactions": [{
-            "request": {
-                "method": "POST", "url": "https://***:***@example.test/path?token=***&keep=yes",
-                "headers": {
-                    "authorization": ["***"], "cookie": ["***"], "x-api-key": ["***"],
-                    "host": ["***:***@example.test"],
+        "interactions": [
+            {
+                "request": {
+                    "method": "POST",
+                    "url": "https://***:***@example.test/path?token=***&keep=yes",
+                    "headers": {
+                        "authorization": ["***"],
+                        "cookie": ["***"],
+                        "x-api-key": ["***"],
+                        "host": ["***:***@example.test"],
+                    },
+                    "body_b64": base64.b64encode(b"safe request").decode("ascii"),
+                    "body_sha256": "synthetic-hash",
+                    "truncated": False,
                 },
-                "body_b64": base64.b64encode(b"safe request").decode("ascii"),
-                "body_sha256": "synthetic-hash", "truncated": False,
-            },
-            "response": {
-                "status": 200, "reason": "OK", "headers": {"set-cookie": ["***"]},
-                "body_b64": base64.b64encode(b"safe response").decode("ascii"),
-                "body_sha256": "synthetic-hash", "truncated": False,
-            },
-            "timing": {"started_at": 0, "duration_ms": 1},
-        }],
+                "response": {
+                    "status": 200,
+                    "reason": "OK",
+                    "headers": {"set-cookie": ["***"]},
+                    "body_b64": base64.b64encode(b"safe response").decode("ascii"),
+                    "body_sha256": "synthetic-hash",
+                    "truncated": False,
+                },
+                "timing": {"started_at": 0, "duration_ms": 1},
+            }
+        ],
     }
     patterns = [{"pattern": "synthetic-secret", "replacement": "***"}]
     path = tmp_path / "cassette.json"
@@ -1313,7 +1362,12 @@ def test_verify_detects_exposure_on_each_stored_surface(tmp_path: Path) -> None:
         ("request", "headers", {"authorization": ["synthetic-secret"]}, "header not redacted"),
         ("request", "headers", {"cookie": ["synthetic-secret"]}, "header not redacted"),
         ("request", "headers", {"x-api-key": ["synthetic-secret"]}, "header not redacted"),
-        ("request", "headers", {"host": ["synthetic-user:synthetic-secret@example.test"]}, "header contains unredacted userinfo"),
+        (
+            "request",
+            "headers",
+            {"host": ["synthetic-user:synthetic-secret@example.test"]},
+            "header contains unredacted userinfo",
+        ),
         ("request", "headers", {"host": ["synthetic-user@[bad"]}, "header invalid"),
         ("response", "headers", {"set-cookie": ["synthetic-secret"]}, "header not redacted"),
         ("request", "body_b64", base64.b64encode(b"synthetic-secret").decode("ascii"), "request body contains"),
@@ -1329,8 +1383,19 @@ def test_verify_reports_malformed_cassettes(tmp_path: Path) -> None:
     for payload, expected in [
         ([], "root is not an object"),
         ({"schema_version": 1, "interactions": [None]}, "interaction 0 is not an object"),
-        ({"schema_version": 1, "interactions": [{"request": [], "response": {}, "timing": {}}]}, "request is not an object"),
-        ({"schema_version": 1, "interactions": [{"request": {"url": 42, "headers": {}, "body_b64": "not base64"}, "response": {}, "timing": {}}]}, "body_b64 invalid"),
+        (
+            {"schema_version": 1, "interactions": [{"request": [], "response": {}, "timing": {}}]},
+            "request is not an object",
+        ),
+        (
+            {
+                "schema_version": 1,
+                "interactions": [
+                    {"request": {"url": 42, "headers": {}, "body_b64": "not base64"}, "response": {}, "timing": {}}
+                ],
+            },
+            "body_b64 invalid",
+        ),
     ]:
         path.write_text(json.dumps(payload), encoding="utf-8")
         assert any(expected in error for error in verify_cassette(path, [], 1))
@@ -1347,12 +1412,20 @@ def test_concurrent_appends_keep_every_interaction(tmp_path: Path) -> None:
             index = worker * 8 + offset
             interaction = {
                 "request": {
-                    "method": "GET", "url": f"http://example.test/{index}", "headers": {},
-                    "body_b64": "", "body_sha256": "", "truncated": False,
+                    "method": "GET",
+                    "url": f"http://example.test/{index}",
+                    "headers": {},
+                    "body_b64": "",
+                    "body_sha256": "",
+                    "truncated": False,
                 },
                 "response": {
-                    "status": 200, "reason": "OK", "headers": {},
-                    "body_b64": "", "body_sha256": "", "truncated": False,
+                    "status": 200,
+                    "reason": "OK",
+                    "headers": {},
+                    "body_b64": "",
+                    "body_sha256": "",
+                    "truncated": False,
                 },
                 "timing": {"started_at": 0, "duration_ms": 0},
             }
@@ -1362,9 +1435,7 @@ def test_concurrent_appends_keep_every_interaction(tmp_path: Path) -> None:
         list(pool.map(record, range(8)))
     interactions = cassette_io.load_cassette(cassette_path)["interactions"]
     assert len(interactions) == 64
-    assert {item["request"]["url"] for item in interactions} == {
-        f"http://example.test/{index}" for index in range(64)
-    }
+    assert {item["request"]["url"] for item in interactions} == {f"http://example.test/{index}" for index in range(64)}
 
 
 def test_atomic_write_preserves_previous_cassette_on_failure(tmp_path: Path) -> None:
@@ -1386,9 +1457,7 @@ def test_record_write_failure_is_logged_without_request_data(tmp_path: Path, cap
             side_effect=cassette_io.CassetteWriteError("could not write cassette"),
         ):
             with proxy_context(str(config_path), mode="record") as proxy_address:
-                response, body = _request(
-                    *proxy_address, "GET", f"http://{host}:{port}/hello?token=synthetic-secret"
-                )
+                response, body = _request(*proxy_address, "GET", f"http://{host}:{port}/hello?token=synthetic-secret")
                 assert response.status == 200 and body == b"hello"
     assert "cassette recording failed: could not write cassette" in caplog.text
     assert "synthetic-secret" not in caplog.text
@@ -1400,7 +1469,10 @@ def test_malformed_replay_cassette_returns_clear_error(tmp_path: Path, caplog) -
     cassette_path.parent.mkdir()
     url = "http://127.0.0.1:12345/private?token=synthetic-secret"
     with proxy_context(str(config_path), mode="replay") as proxy_address:
-        for content in ("not json", json.dumps({"schema_version": 1, "interactions": [{"request": {}, "response": {}}]})):
+        for content in (
+            "not json",
+            json.dumps({"schema_version": 1, "interactions": [{"request": {}, "response": {}}]}),
+        ):
             cassette_path.write_text(content, encoding="utf-8")
             response, body = _request(*proxy_address, "GET", url)
             assert response.status == 502 and body == b"invalid cassette"
@@ -1417,9 +1489,7 @@ def test_proxy_context_restores_existing_proxy_environment(monkeypatch) -> None:
         thread.return_value.start.return_value = ("127.0.0.1", 4321)
         with proxy_context("unused") as address:
             assert address == ("127.0.0.1", 4321)
-            assert {name: os.environ[name] for name in names} == {
-                name: "http://127.0.0.1:4321" for name in names
-            }
+            assert {name: os.environ[name] for name in names} == {name: "http://127.0.0.1:4321" for name in names}
         thread.return_value.stop.assert_called_once_with()
     assert {name: os.environ[name] for name in names} == original
 

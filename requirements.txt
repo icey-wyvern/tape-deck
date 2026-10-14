@@ -1,4 +1,1 @@
-pytest==9.0.2
-cryptography
-h11
-trustme
+-e .[dev]

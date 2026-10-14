@@ -2,11 +2,20 @@ import re
 from typing import Dict, Iterable, List, Tuple
 from urllib.parse import unquote_plus, urlsplit, urlunsplit
 
-
 REDACTION_MARKER = "***"
 SENSITIVE_QUERY_KEYS = {
-    "token", "accesstoken", "refreshtoken", "idtoken", "apikey", "key",
-    "password", "passwd", "secret", "clientsecret", "auth", "authorization",
+    "token",
+    "accesstoken",
+    "refreshtoken",
+    "idtoken",
+    "apikey",
+    "key",
+    "password",
+    "passwd",
+    "secret",
+    "clientsecret",
+    "auth",
+    "authorization",
 }
 
 

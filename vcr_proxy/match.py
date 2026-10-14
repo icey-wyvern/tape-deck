@@ -69,7 +69,9 @@ def match_interaction(cfg_match: Dict[str, Any], incoming_key: Dict[str, Any], i
     request = interaction["request"]
     if incoming_key.get("method") and incoming_key["method"] != request["method"]:
         return False
-    if incoming_key.get("url") and incoming_key["url"] != normalize_url(request["url"], cfg_match.get("ignore_query_params", [])):
+    if incoming_key.get("url") and incoming_key["url"] != normalize_url(
+        request["url"], cfg_match.get("ignore_query_params", [])
+    ):
         return False
     expected_headers = normalize_headers(
         ((k, v) for k, values in request["headers"].items() for v in values),
@@ -80,5 +82,5 @@ def match_interaction(cfg_match: Dict[str, Any], incoming_key: Dict[str, Any], i
         return False
     if incoming_key.get("body_strategy") == "exact":
         body_b64 = request.get("body_b64", "")
-        return incoming_key.get("body_b64") == body_b64
-    return incoming_key.get("body_sha256") == request.get("body_sha256")
+        return bool(incoming_key.get("body_b64") == body_b64)
+    return bool(incoming_key.get("body_sha256") == request.get("body_sha256"))

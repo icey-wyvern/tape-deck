@@ -2,7 +2,7 @@ import ssl
 from pathlib import Path
 from typing import Dict, Optional
 
-from .tls_ca import CaBundle, ensure_leaf, load_ca
+from .tls_ca import ensure_leaf, load_ca
 
 
 class TlsManager:
@@ -38,7 +38,8 @@ class TlsManager:
             except Exception:
                 return
 
-        ctx.set_servername_callback(_sni_callback)
+        # Typeshed gives this callback's third argument the wrong type; CPython passes SSLContext.
+        ctx.set_servername_callback(_sni_callback)  # type: ignore[arg-type]
         return ctx
 
     def upstream_context(self, verify: bool, ca_bundle_path: Optional[Path] = None) -> ssl.SSLContext:

@@ -1,9 +1,10 @@
 import asyncio
-import time
 import hashlib
 import logging
+import time
+from collections.abc import Awaitable
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, cast
 from urllib.parse import urlsplit
 
 import h11
@@ -11,10 +12,9 @@ import h11
 from . import cassette as cassette_io
 from .cassette import b64encode_bytes
 from .config import Config
-from .match import body_hash, request_match_key, match_interaction
+from .match import body_hash, match_interaction, request_match_key
 from .redact import redact_body, redact_headers, redact_url
 from .tls_manager import TlsManager
-
 
 HOP_BY_HOP = {
     "connection",
@@ -41,9 +41,7 @@ class ProxyServer:
         self._replayed_indices: Dict[Path, set[int]] = {}
         self._replay_locks: Dict[Path, asyncio.Lock] = {}
 
-    async def _take_replay_interaction(
-        self, path: Path, incoming_key: Dict[str, Any]
-    ) -> Optional[Dict[str, Any]]:
+    async def _take_replay_interaction(self, path: Path, incoming_key: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         lock = self._replay_locks.setdefault(path, asyncio.Lock())
         async with lock:
             cassette = cassette_io.load_cassette(path)
@@ -57,7 +55,7 @@ class ProxyServer:
                     raise cassette_io.CassetteError("invalid cassette interaction") from exc
                 if matches:
                     used.add(index)
-                    return interaction
+                    return cast(Dict[str, Any], interaction)
             return None
 
     async def start(self) -> None:
@@ -258,7 +256,7 @@ class ProxyServer:
         protocol = transport.get_protocol()
         ctx = tls_manager.server_context(host)
         new_transport = await loop.start_tls(transport, protocol, ctx, server_side=True)
-        tls_writer = asyncio.StreamWriter(new_transport, protocol, reader, loop)
+        tls_writer = asyncio.StreamWriter(cast(asyncio.WriteTransport, new_transport), protocol, reader, loop)
         try:
             await self._handle_https_session(reader, tls_writer, host, port)
         finally:
@@ -295,9 +293,7 @@ class ProxyServer:
                 return
             method, target, headers = request
             if _header_value(headers, "transfer-encoding") == "chunked":
-                await _send_h11_error(
-                    writer, server_conn, 400, "Bad Request", b"chunked request bodies not supported"
-                )
+                await _send_h11_error(writer, server_conn, 400, "Bad Request", b"chunked request bodies not supported")
                 return
             url = _https_url(host, port, target)
             if self.mode == "record":
@@ -488,9 +484,7 @@ def _header_has_token(headers: List[Tuple[str, str]], name: str, token: str) -> 
     return token.lower() in [part.strip().lower() for part in value.split(",")]
 
 
-def _prepare_upstream_headers(
-    headers: List[Tuple[str, str]], host: str, port: int
-) -> List[Tuple[str, str]]:
+def _prepare_upstream_headers(headers: List[Tuple[str, str]], host: str, port: int) -> List[Tuple[str, str]]:
     cleaned: List[Tuple[str, str]] = []
     has_host = False
     for name, value in headers:
@@ -506,9 +500,7 @@ def _prepare_upstream_headers(
     return cleaned
 
 
-def _prepare_upstream_headers_https(
-    headers: List[Tuple[str, str]], host: str, port: int
-) -> List[Tuple[str, str]]:
+def _prepare_upstream_headers_https(headers: List[Tuple[str, str]], host: str, port: int) -> List[Tuple[str, str]]:
     cleaned: List[Tuple[str, str]] = []
     has_host = False
     for name, value in headers:
@@ -577,7 +569,7 @@ async def _read_fixed_length(
 ) -> Tuple[bytes, str, bool]:
     remaining = length
     collected = bytearray()
-    hasher = _sha256()
+    hasher = hashlib.sha256()
     while remaining > 0:
         chunk = await _read_with_timeout(reader, min(65536, remaining), timeout_s)
         if not chunk:
@@ -596,7 +588,7 @@ async def _read_until_close(
     timeout_s: Optional[float] = None,
 ) -> Tuple[bytes, str, bool]:
     collected = bytearray()
-    hasher = _sha256()
+    hasher = hashlib.sha256()
     while True:
         chunk = await _read_with_timeout(reader, 65536, timeout_s)
         if not chunk:
@@ -614,7 +606,7 @@ async def _read_chunked(
     timeout_s: Optional[float] = None,
 ) -> Tuple[bytes, str, bool]:
     collected = bytearray()
-    hasher = _sha256()
+    hasher = hashlib.sha256()
     while True:
         size_line = await _readline_with_timeout(reader, timeout_s)
         if not size_line:
@@ -645,10 +637,6 @@ async def _read_chunked(
     return bytes(collected), hasher.hexdigest(), False
 
 
-def _sha256():
-    return hashlib.sha256()
-
-
 def _timeout_seconds(timeout_ms: int) -> Optional[float]:
     if timeout_ms <= 0:
         return None
@@ -675,7 +663,7 @@ async def _readline_with_timeout(reader: asyncio.StreamReader, timeout_s: Option
     return await _wait_for_io(reader.readline(), timeout_s)
 
 
-async def _wait_for_io(awaitable: Any, timeout_s: Optional[float]) -> Any:
+async def _wait_for_io[T](awaitable: Awaitable[T], timeout_s: Optional[float]) -> T:
     if timeout_s is None:
         return await awaitable
     try:
@@ -797,7 +785,7 @@ async def _h11_next_event(
     reader: asyncio.StreamReader,
     conn: h11.Connection,
     timeout_s: Optional[float] = None,
-) -> Optional[h11.Event]:
+) -> h11.Event | type[h11.NEED_DATA] | type[h11.PAUSED]:
     while True:
         event = conn.next_event()
         if event is h11.NEED_DATA:
@@ -899,7 +887,7 @@ def _normalize_response_headers(
 class _BodyCapture:
     def __init__(self, redact_patterns: List[Dict[str, str]], keep_full: bool) -> None:
         self._redact_patterns = redact_patterns
-        self._hasher = _sha256()
+        self._hasher = hashlib.sha256()
         self._stored = bytearray()
         self._keep_full = keep_full
 
@@ -930,7 +918,7 @@ class _BodyRecord:
 
 
 def _needs_full_body(cfg_match: Dict[str, Any]) -> bool:
-    return cfg_match.get("body", {}).get("strategy", "hash") == "exact"
+    return bool(cfg_match.get("body", {}).get("strategy", "hash") == "exact")
 
 
 def _build_incoming_key(

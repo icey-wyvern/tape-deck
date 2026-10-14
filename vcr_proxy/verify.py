@@ -8,7 +8,6 @@ from urllib.parse import unquote, urlsplit
 
 from .redact import REDACTION_MARKER, exposed_query_keys, redact_body, redact_url
 
-
 REQUIRED_REQUEST_KEYS = {"method", "url", "headers", "body_b64", "body_sha256", "truncated"}
 REQUIRED_RESPONSE_KEYS = {"status", "reason", "headers", "body_b64", "body_sha256", "truncated"}
 
@@ -66,10 +65,7 @@ def _verify_url(url: object, location: str, errors: List[str]) -> None:
         return
     try:
         parts = urlsplit(url)
-        if any(
-            value is not None and unquote(value) != REDACTION_MARKER
-            for value in (parts.username, parts.password)
-        ):
+        if any(value is not None and unquote(value) != REDACTION_MARKER for value in (parts.username, parts.password)):
             errors.append(f"{location} url contains userinfo")
         for name in exposed_query_keys(url):
             errors.append(f"{location} url query parameter not redacted: {name}")

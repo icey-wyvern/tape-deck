@@ -3,7 +3,7 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Optional, Tuple, cast
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
@@ -63,16 +63,12 @@ def init_ca(ca_key_path: Path, ca_cert_path: Path, password: Optional[str]) -> N
 def load_ca(ca_key_path: Path, ca_cert_path: Path, password: Optional[str]) -> CaBundle:
     key_bytes = ca_key_path.read_bytes()
     cert_bytes = ca_cert_path.read_bytes()
-    key = serialization.load_pem_private_key(
-        key_bytes, password=password.encode("utf-8") if password else None
-    )
+    key = serialization.load_pem_private_key(key_bytes, password=password.encode("utf-8") if password else None)
     cert = x509.load_pem_x509_certificate(cert_bytes)
-    return CaBundle(key=key, cert=cert)
+    return CaBundle(key=cast(rsa.RSAPrivateKey, key), cert=cert)
 
 
-def ensure_leaf(
-    host: str, ca: CaBundle, leaf_dir: Path, password: Optional[str]
-) -> Tuple[Path, Path]:
+def ensure_leaf(host: str, ca: CaBundle, leaf_dir: Path, password: Optional[str]) -> Tuple[Path, Path]:
     leaf_dir.mkdir(parents=True, exist_ok=True)
     safe = host.replace(":", "_")
     cert_path = leaf_dir / f"{safe}.crt"
@@ -131,6 +127,7 @@ def _generate_key() -> rsa.RSAPrivateKey:
 
 
 def _write_key(path: Path, key: rsa.RSAPrivateKey, password: Optional[str]) -> None:
+    enc: serialization.KeySerializationEncryption
     if password:
         enc = serialization.BestAvailableEncryption(password.encode("utf-8"))
     else:

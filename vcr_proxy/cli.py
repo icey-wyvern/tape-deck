@@ -60,7 +60,10 @@ def _verify(config_path: str) -> int:
         return 2
     cfg = load_config(config_path)
     cassette_dir = cfg.cassette_dir
-    errors = _verify_cassettes(cassette_dir, cfg.redaction.get("headers", []), cfg.cassette["schema_version"])
+    errors = _verify_cassettes(
+        cassette_dir, cfg.redaction.get("headers", []), cfg.cassette["schema_version"],
+        cfg.redaction.get("body_patterns", []),
+    )
     if errors:
         for err in errors:
             print(err)
@@ -69,12 +72,15 @@ def _verify(config_path: str) -> int:
     return 0
 
 
-def _verify_cassettes(cassette_dir: Path, redact_headers: List[str], schema_version: int) -> List[str]:
+def _verify_cassettes(
+    cassette_dir: Path, redact_headers: List[str], schema_version: int,
+    body_patterns: List[dict],
+) -> List[str]:
     errors: List[str] = []
     if not cassette_dir.exists():
         return [f"{cassette_dir}: not found"]
     for path in cassette_dir.glob("*.json"):
-        errors.extend(verify_cassette(path, redact_headers, schema_version))
+        errors.extend(verify_cassette(path, redact_headers, schema_version, body_patterns))
     return errors
 
 

@@ -11,7 +11,7 @@ from . import cassette as cassette_io
 from .cassette import b64encode_bytes
 from .config import Config
 from .match import body_hash, request_match_key, match_interaction
-from .redact import redact_body, redact_headers
+from .redact import redact_body, redact_headers, redact_url
 from .tls_manager import TlsManager
 
 
@@ -158,7 +158,7 @@ class ProxyServer:
         interaction = {
             "request": {
                 "method": method.upper(),
-                "url": url,
+                "url": redact_url(url),
                 "headers": _headers_to_dict(redacted_headers),
                 "body_b64": b64encode_bytes(stored_req_body),
                 "body_sha256": body_hash(redacted_body),
@@ -194,7 +194,7 @@ class ProxyServer:
         cassette = cassette_io.load_cassette(cassette_path)
         redacted_headers = redact_headers(headers, self.cfg.redaction.get("headers", []))
         redacted_body = redact_body(body, self.cfg.redaction.get("body_patterns", []))
-        incoming_key = request_match_key(self.cfg.match, method, target, redacted_headers, redacted_body)
+        incoming_key = request_match_key(self.cfg.match, method, redact_url(target), redacted_headers, redacted_body)
         for interaction in cassette.get("interactions", []):
             if match_interaction(self.cfg.match, incoming_key, interaction):
                 await _send_replay(client_writer, interaction)
@@ -340,7 +340,7 @@ class ProxyServer:
         interaction = {
             "request": {
                 "method": method.upper(),
-                "url": url,
+                "url": redact_url(url),
                 "headers": _headers_to_dict(redacted_headers),
                 "body_b64": b64encode_bytes(req_record.body_bytes),
                 "body_sha256": req_record.body_sha256,
@@ -386,7 +386,7 @@ class ProxyServer:
         await _h11_stream_request_body(client_reader, server_conn, None, None, req_capture)
         req_record = req_capture.finish()
         redacted_headers = redact_headers(headers, self.cfg.redaction.get("headers", []))
-        incoming_key = _build_incoming_key(self.cfg.match, method, url, redacted_headers, req_record)
+        incoming_key = _build_incoming_key(self.cfg.match, method, redact_url(url), redacted_headers, req_record)
         for interaction in cassette.get("interactions", []):
             if match_interaction(self.cfg.match, incoming_key, interaction):
                 resp = interaction["response"]

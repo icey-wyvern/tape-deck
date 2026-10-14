@@ -29,3 +29,12 @@ ca/**/*.key
 cassettes/
 cassettes/*.json
 .vcr-proxy.json
+.env
+.env.*
+!.env.example
+!.env.sample
+ca-*/
+cassettes-*/
+.ca/
+.cassettes/
+*.cassette.json

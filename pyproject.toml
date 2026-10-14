@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "vcr-proxy"
 version = "0.1.0"
-description = "Record and replay HTTP/HTTPS interactions through a local proxy."
+description = "Tape Deck: a local HTTP/HTTPS record-and-replay proxy for integration tests."
 readme = "README.md"
 requires-python = ">=3.12"
 license = "Apache-2.0"

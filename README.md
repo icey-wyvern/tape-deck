@@ -1,179 +1,80 @@
-# VCR Proxy (HTTP + HTTPS MITM)
+# Tape Deck
 
-Record and replay HTTP/1.1 interactions for deterministic tests. Asyncio + stdlib for core I/O, with TLS MITM for HTTPS.
+[![CI](https://github.com/icey-wyvern/tape-deck/actions/workflows/ci.yml/badge.svg)](https://github.com/icey-wyvern/tape-deck/actions/workflows/ci.yml)
 
-## Quick start (Windows)
+Tape Deck is a local HTTP/HTTPS record-and-replay proxy for deterministic integration tests. It records real upstream HTTP/1.1 traffic in JSON cassettes, then replays those responses without contacting the upstream service. HTTPS works through interception with a locally generated certificate authority (CA).
 
-```bat
-python -m venv .venv
-.venv\Scripts\activate.bat
-pip install -r requirements.txt
+The installed command is `vcr-proxy` and the Python package is `vcr_proxy`. The config file remains `.vcr-proxy.json`.
+
+## Request flow
+
+```text
+Record: client/test --> Tape Deck --> upstream
+                           |
+                           +--> JSON cassette
+
+Replay: client/test --> Tape Deck --> JSON cassette
+                           X upstream
 ```
 
-Create a default config:
+For HTTPS, the client sends `CONNECT` to Tape Deck. Tape Deck presents a leaf certificate signed by its local CA, handles HTTP/1.1 inside the TLS tunnel, and connects to the upstream only while recording.
 
-```bat
-python -m vcr_proxy.cli init --config .vcr-proxy.json
+## Try it
+
+Use Python 3.12+ in an active virtual environment. The recording step needs internet access and `curl`; on Windows PowerShell, use `curl.exe` in place of `curl`. The example's `--ssl-revoke-best-effort` option handles missing revocation status for the local CA with Windows Schannel.
+
+```sh
+python -m pip install -e .
+vcr-proxy init --config .vcr-proxy.json
+python -c "import json, pathlib; p=pathlib.Path('.vcr-proxy.json'); c=json.loads(p.read_text()); c['tls']['enabled']=True; p.write_text(json.dumps(c, indent=2) + '\n')"
+vcr-proxy ca-init --config .vcr-proxy.json
 ```
 
-Create a local CA for HTTPS MITM (once per machine or repo):
+The generated config starts with HTTPS interception disabled; the third command enables it. `ca-init` writes the local CA under `ca/`. The `--cacert` option below trusts that CA for this request, so system-wide CA installation is unnecessary.
 
-```bat
-python -m vcr_proxy.cli ca-init --config .vcr-proxy.json
+Start recording in one terminal:
+
+```sh
+vcr-proxy record --config .vcr-proxy.json
 ```
 
-Trust the CA in Windows (Current User store):
+In another terminal, make a request through the proxy:
 
-```bat
-certutil -user -addstore "Root" ca\ca.crt
+```sh
+curl -i --proxy http://127.0.0.1:8080 --noproxy "" --cacert ca/ca.crt --ssl-revoke-best-effort https://example.com/
 ```
 
-Run record mode:
+The response should include `HTTP/1.1 200 OK`. Stop record mode with Ctrl+C. You can disconnect from the network now to demonstrate offline replay. Start the proxy again in replay mode, then repeat the same `curl` command:
 
-```bat
-python -m vcr_proxy.cli record --config .vcr-proxy.json
+```sh
+vcr-proxy replay --config .vcr-proxy.json
 ```
 
-Point your client to the proxy:
+The same page body should appear again, including while offline. The cassette is in `cassettes/cassette.json`; `vcr-proxy verify --config .vcr-proxy.json` checks its schema and known/configured redaction surfaces.
 
-```bat
-set HTTP_PROXY=http://127.0.0.1:8080
+## Guarantees and controls
+
+- **Offline replay:** A matching request is served from the cassette. Matching interactions are consumed in recorded order within one proxy run. After they are exhausted, replay returns a 502 miss and never falls back to the upstream. A fresh replay process starts from the first interaction again.
+- **Cassette writes:** Recording serializes concurrent appends with an in-process, per-cassette lock and replaces completed JSON files atomically. This does not coordinate separate processes or machines.
+- **Credential handling:** Before persistence, Tape Deck masks configured request/response headers and body patterns, common credential-bearing query parameters, and URL userinfo. `verify` checks cassette structure and these known/configured surfaces. Add redaction rules for application-specific sensitive fields; arbitrary secrets cannot always be detected.
+- **Configuration:** `cassette_dir` and `cassette.file_strategy` select storage; `match` controls method, URL, headers, and body matching; `redaction` controls headers and body patterns; `tls` controls HTTPS interception and upstream certificate verification. `vcr-proxy init` generates the full default config.
+
+## Limits
+
+Tape Deck handles HTTP/1.1. Plain HTTP clients must send absolute-form proxy requests; HTTPS clients must use `CONNECT`. Chunked request bodies are unsupported. Upstream chunked responses are stored dechunked and replayed with `Content-Length`. Request and response bodies are stored in full where applicable, as base64 in cassettes after configured redaction. Cassette contents can therefore be large or sensitive if redaction is incomplete.
+
+## Development
+
+Install the development extra and run the same gates as [GitHub Actions](.github/workflows/ci.yml):
+
+```sh
+python -m pip install -r requirements.txt
+ruff format --check
+ruff check
+mypy vcr_proxy
+python -m pytest -q -p no:cacheprovider
 ```
 
-Stop the proxy (Ctrl+C), then run replay mode:
+The `vcr_proxy.pytest_helper.proxy_context` helper starts Tape Deck inside a test and sets both HTTP and HTTPS proxy environment variables for its duration.
 
-```bat
-python -m vcr_proxy.cli replay --config .vcr-proxy.json
-```
-
-## Quick test with curl (HTTPS)
-
-```bat
-curl -v --ssl-no-revoke --cacert ca\ca.crt -H "Connection: close" -x http://127.0.0.1:8080 https://example.com
-```
-
-Run once in record mode, then again in replay mode.
-
-Install the package to get the `vcr-proxy` command:
-
-```bat
-pip install .
-```
-
-For editable development installs with test dependencies:
-
-```bat
-pip install -e .[test]
-```
-
-## Commands
-
-- `vcr-proxy record --config .vcr-proxy.json`
-- `vcr-proxy replay --config .vcr-proxy.json`
-- `vcr-proxy verify --config .vcr-proxy.json`
-- `vcr-proxy doctor`
-- `vcr-proxy init --config .vcr-proxy.json`
-- `vcr-proxy ca-init --config .vcr-proxy.json`
-
-If you did not install the CLI, use `python -m vcr_proxy.cli ...` instead.
-
-## Config
-
-Example `.vcr-proxy.json`:
-
-```json
-{
-  "listen": { "host": "127.0.0.1", "port": 8080 },
-  "cassette_dir": "cassettes",
-  "limits": { "upstream_timeout_ms": 30000 },
-  "match": {
-    "method": true,
-    "url": true,
-    "ignore_query_params": [],
-    "headers_allowlist": [],
-    "headers_denylist": [],
-    "body": { "strategy": "hash" }
-  },
-  "redaction": {
-    "headers": ["authorization", "cookie", "set-cookie", "x-api-key"],
-    "body_patterns": [{ "pattern": "Bearer [A-Za-z0-9._-]+", "replacement": "***" }]
-  },
-  "cassette": { "file_strategy": "single", "schema_version": 1 },
-  "tls": {
-    "enabled": false,
-    "ca_dir": "ca",
-    "ca_key": "ca.key",
-    "ca_cert": "ca.crt",
-    "leaf_dir": "ca/leaf",
-    "key_password": null,
-    "upstream_insecure": false,
-    "upstream_ca_bundle": null
-  }
-}
-```
-
-## HTTPS setup (MITM)
-
-1) Generate the CA with `ca-init` before using HTTPS.
-2) Trust the generated `ca.crt` in your client or OS trust store.
-3) Use HTTPS as normal through the proxy (client must use CONNECT).
-
-Windows import (Current User):
-
-```bat
-certutil -user -addstore "Root" ca\ca.crt
-```
-
-To remove later:
-
-```bat
-certutil -user -delstore "Root" "vcr-proxy local CA"
-```
-
-## Behavior notes
-
-- HTTP and HTTPS via CONNECT are supported.
-- Proxy-form requests (absolute URLs) are required for HTTP.
-- Replay is strict: no match returns 502.
-- Upstream chunked responses are stored dechunked and replayed with `Content-Length`.
-- Request and response bodies are stored in full (no truncation).
-- Chunked request bodies are not supported in the MVP.
-- HTTPS client connections use ALPN `http/1.1` only.
-
-## Cassette format
-
-JSON with sorted keys and stable formatting. Bodies are base64-encoded.
-
-Top-level keys:
-- `schema_version`
-- `interactions`
-
-Each interaction:
-- `request`: `method`, `url`, `headers`, `body_b64`, `body_sha256`, `truncated`
-- `response`: `status`, `reason`, `headers`, `body_b64`, `body_sha256`, `truncated`
-- `timing`: `started_at`, `duration_ms`
-
-## Verify
-
-```bat
-python -m vcr_proxy.cli verify --config .vcr-proxy.json
-```
-
-Checks cassette schema and ensures redacted headers are masked.
-
-## Tests
-
-```bat
-python -m pytest -q
-```
-
-## Pytest helper
-
-Use the helper to run the proxy in tests:
-
-```python
-from vcr_proxy.pytest_helper import proxy_context
-
-with proxy_context(".vcr-proxy.json", mode="record") as (host, port):
-    ...
-```
+Tape Deck is licensed under [Apache-2.0](LICENSE).
